@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: latin-1 -*-
+import sys
+#append path to site packages pvk
+sys.path.append("/usr/local/lib/python3.6/site-packages")
+sys.path.append("/usr/local/lib/python3.6/site-packages/PIL")
 import argparse
 import os.path
 import encodedcc
 import xlrd
 import datetime
-import sys
 import mimetypes
 import requests
-from PIL import Image # install me with 'pip3 install Pillow'
+#from PIL import Image # install me with 'pip3 install Pillow'
 from urllib.parse import quote
 from base64 import b64encode
 import magic  # install me with 'pip3 install python-magic'

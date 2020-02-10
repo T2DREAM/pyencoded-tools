@@ -3,14 +3,28 @@
 
 
 '''
+Releasenator will no longer release files that are associated with files in the 
+experiment being released via controlled_by and supersedes relationship
+
+Version 1.6
+
 Releasenator changelog
+
+Version 1.5
+
+Store individual release logs instead of overwriting.
+
+Version 1.4
+
+Blocks release of objects associated with HeLa data unless --hela flag
+specified.
 
 Version 1.3
 
-Releasenator will no longer release files that are associated with pielines
-that are not in "active" status, for such files warning will be printed.
+Releasenator will no longer release files that are associated with pipelines
+that are not in "released" status, for such files warning will be printed.
 Released earlier files will remain released, even if they are associated with
-non-active pipelines, the script will print out warning messages for these
+unreleased pipelines, the script will print out warning messages for these
 files as well.
 
 '''
@@ -83,11 +97,16 @@ Misc. Useage:
 logger = logging.getLogger(__name__)
 
 
+def make_dir(directory):
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+
 def getArgs():
     parser = argparse.ArgumentParser(
         description=__doc__, epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        )
+    )
     parser.add_argument('--infile',
                         help="File containing single column of accessions " +
                         "or a single accession or comma separated list " +
@@ -111,7 +130,10 @@ def getArgs():
                         "file. Default is off",
                         action='store_true', default=False)
     parser.add_argument('--outfile',
-                        help="Output file name", default='Release_report.txt')
+                        help="Output file name",
+                        default='{}_{}.txt'.format('release_report', time.strftime("%Y_%b_%d_%I_%M_%S")))
+    parser.add_argument('--out_dir',
+                         help='Directory to store release reports', default='release_reports')
     parser.add_argument('--key',
                         help="The keypair identifier from the keyfile.",
                         default='default')
@@ -124,7 +146,13 @@ def getArgs():
     parser.add_argument('--debug',
                         help="Run script in debug mode.  Default is off",
                         action='store_true', default=False)
+    parser.add_argument('--hela',
+                        help='Force release of HeLa data.',
+                        action='store_true')
     args = parser.parse_args()
+    make_dir(args.out_dir)
+    run_type = 'update' if args.update else 'dry_run'
+    args.outfile = '{}/{}_{}'.format(args.out_dir, run_type, args.outfile)
     if args.debug:
         logging.basicConfig(filename=args.outfile, filemode="w",
                             format='%(levelname)s:%(message)s',
@@ -141,7 +169,7 @@ def getArgs():
 class Data_Release():
     def __init__(self, args, connection):
         # renaming some things so I can be lazy and not pass them around
-        self.releasenator_version = 1.3
+        self.releasenator_version = 1.6
         self.infile = args.infile
         self.outfile = args.outfile
         self.QUERY = args.query
@@ -156,8 +184,18 @@ class Data_Release():
         self.statusDict = {}
         self.searched = []
         self.connection = connection
+        self.HELA = args.hela
+        # Define objects associated with HeLa data.
+        self.hela_associated_objects = [
+            'Experiment',
+            'Biosample',
+            'File',
+            'Library',
+            'Replicate'
+        ]
         temp = encodedcc.get_ENCODE("/profiles/", self.connection)
-
+        # Fix for WRAN-708, new objects in profiles that don't have properties.
+        temp = {k: v for k, v in temp.items() if isinstance(v, dict) and v.get('properties')}
         ignore = ["Lab", "Award", "Platform",
                   "Organism", "Reference", "AccessKey", "User", "AnalysisStep",
                   "AnalysisStepVersion", "AnalysisStepRun", "Pipeline",
@@ -222,6 +260,8 @@ class Data_Release():
         if self.FORCE:
             print("WARNING: Objects that do not " +
                   "pass audit will be FORCE-released")
+        if self.HELA:
+            print('WARNING: Objects associated with HeLa data will be released')
         if self.LOGALL:
             print("Logging all statuses")
         if self.infile:
@@ -274,7 +314,9 @@ class Data_Release():
             if (object_type == 'Dataset' and
                 prop not in ['files', 'contributing_files']) or \
                (object_type == 'File' and
-                prop != 'derived_from') or \
+                prop not in ['derived_from',
+                             'controlled_by',
+                             'supersedes']) or \
                (object_type not in ['Dataset', 'File']):
 
                 if d[prop].get("linkTo"):
@@ -283,7 +325,7 @@ class Data_Release():
                     if d[prop].get("items"):
                         if (object_type == 'File' and prop == 'quality_metrics') or \
                            (object_type == 'Dataset' and
-                           prop in ['replicates', 'original_files']):
+                                prop in ['replicates', 'original_files']):
                             i = d[prop].get("items")
                             if i.get("linkFrom"):
                                 self.keysLink.append(prop)
@@ -303,8 +345,8 @@ class Data_Release():
            (identifier_link not in self.searched):
             if (subobjname == 'File'):
                 if self.is_restricted(subobj) is True:
-                    print (subobj['@id'] + ' is restricted, ' +
-                           'therefore will not be released')
+                    print(subobj['@id'] + ' is restricted, ' +
+                          'therefore will not be released')
                     restricted_flag = True
                     self.searched.append(subobj["@id"])
                 if subobj.get('analysis_step_version'):
@@ -312,10 +354,8 @@ class Data_Release():
                         identifier_link,
                         self.connection, "embedded"))
                     if p:
-                        print (subobj['@id'] +
-                               ' is associated with inactive ' +
-                               'pipeline ' + p +
-                               ', therefore will not be released')
+                        print('{} is only associated with inactive pipelines'
+                              ' and therefore will not be released: {}'.format(subobj['@id'], p))
                         inactive_pipeline_flag = True
                         self.searched.append(subobj["@id"])
             # expand subobject
@@ -339,16 +379,71 @@ class Data_Release():
         return False
 
     def has_inactive_pipeline(self, file_object):
-        if file_object.get('analysis_step_version'):
-            step_version = file_object.get('analysis_step_version')
-            if step_version.get('analysis_step'):
-                step = step_version.get('analysis_step')
-                if step.get('pipelines'):
-                    for p in step.get('pipelines'):
-                        if p['status'] not in ['active']:
-                            return p['@id']
+        pipelines = file_object.get('analysis_step_version',
+                                    {}).get('analysis_step',
+                                            {}).get('pipelines')
+        if pipelines is not None:
+            if all([p['status'] != 'released' for p in pipelines]):
+                return [p['@id'] for p in pipelines]
         return False
 
+    def _get_associated_term_id(self, data_type, data):
+        """
+        Find biosample_term_id associated with particular object.
+        """
+        obj_id = None
+        if data_type == 'File':
+            # Get biosample_term_id in file.dataset.
+            obj_id = data.get('dataset')
+        elif data_type == 'Replicate':
+            # Get biosample_term_id in replicate.experiment.
+            obj_id = data.get('experiment')
+        elif data_type == 'Library':
+            # Get biosample_term_id in library.biosample.
+            obj_id = data.get('biosample')
+        else:
+            # For experiments and biosamples.
+            biosample_term_id = data.get('biosample_term_id')
+        if obj_id is not None:
+            # Return biosample_term_id of embedded object.
+            biosample_term_id = encodedcc.get_ENCODE(
+                obj_id,
+                self.connection
+            ).get('biosample_term_id')
+        return biosample_term_id
+
+    def associated_with_hela_data(self, data_type, data):
+        """
+        Block HeLa data if found.
+        """
+        if data_type in self.hela_associated_objects:
+            biosample_term_id = self._get_associated_term_id(data_type, data)
+            # Assumes EFO:000279 includes all HeLa data.
+            if biosample_term_id == 'EFO:0002791':
+                # Message to screen.
+                print('WARNING: Release of HeLa data prohibited unless '
+                      'explicitly approved by NHGRI. {} will not be released unless '
+                      '--hela flag specified. SKIPPING!'.format(data['@id']))
+                # Message to log.
+                logger.warning('WARNING: Trying to release HeLa '
+                               'data: {}. SKIPPING!'.format(data['@id']))
+                # Will prevent release of object.
+                return True
+        return False
+
+    def has_audit(self, accession):
+        # Another GET request for page frame.
+        audit = encodedcc.get_ENCODE(accession,
+                                     self.connection,
+                                     'page').get('audit', {})
+        if (audit.get('ERROR') is not None
+                or audit.get('NOT_COMPLIANT') is not None):
+            details = [v[0]['category'] for v in audit.values()]
+            message = 'WARNING: AUDIT on object: {}. SKIPPING!'.format(details)
+            print(message)
+            logger.warning(message)
+            return True
+        return False
 
     def get_status(self, obj, approved_for_update_types):
         '''take object get status, @type, @id, uuid
@@ -396,7 +491,7 @@ class Data_Release():
             log += " with date {}".format(now)
         logger.info('%s' % log)
         if self.PRINTALL:
-            print (log)
+            print(log)
         encodedcc.patch_ENCODE(identifier, self.connection, patch_dict)
 
     def run_script(self):
@@ -419,40 +514,33 @@ class Data_Release():
                "archived",
                "format check failed",
                "content error",
-               "uploading",
                "error"]
 
         ignore = ["User",
                   "AntibodyCharacterization",
                   "Publication"]
-        print ("Releasenator version " + str(self.releasenator_version))
+        version = 'Releasenator version {}'.format(self.releasenator_version)
+        print(version)
+        logger.info(version)
         for accession in self.ACCESSIONS:
-            print ("Processing accession: " + accession)
-            expandedDict = encodedcc.get_ENCODE(accession, self.connection)
-            objectStatus = expandedDict.get("status")
-            obj = expandedDict["@type"][0]
-
-            audit = encodedcc.get_ENCODE(accession, self.connection,
-                                         "page").get("audit", {})
-            passAudit = True
-            logger.info('Releasenator version ' + str(self.releasenator_version))
-            logger.info('%s' % "{}: {} Status: {}".format(obj, accession,
-                        objectStatus))
-            if audit.get("ERROR", ""):
-                logger.warning('%s' % "WARNING: Audit status: ERROR")
-                passAudit = False
-            if audit.get("NOT_COMPLIANT", ""):
-                logger.warning('%s' % "WARNING: Audit status: NOT COMPLIANT")
-                passAudit = False
+            print('Processing accession:', accession)
+            data = encodedcc.get_ENCODE(accession, self.connection)
+            data_status = data.get('status')
+            data_type = data['@type'][0]
+            logger.info('{}: {} Status: {}'.format(data_type,
+                                                   accession,
+                                                   data_status))
+            # Skip if associated with HeLa data.
+            if not self.HELA and self.associated_with_hela_data(data_type, data):
+                continue
+            # Skip if has audit.
+            if not self.FORCE and self.has_audit(accession):
+                continue
             self.statusDict = {}
-
             self.get_status(
-                expandedDict,
+                data,
                 hi.dictionary_of_lower_levels.get(
-                    hi.levels_mapping.get(obj)))
-            if self.FORCE:
-                passAudit = True
-
+                    hi.levels_mapping.get(data_type)))
             named = []
             for key in sorted(self.statusDict.keys()):
                 name = self.statusDict[key][0]
@@ -467,7 +555,8 @@ class Data_Release():
                             logger.info(log)
                             # print (log)
                     elif status in bad:
-                        log = '%s' % "WARNING: {} ".format(key) + "has status {}".format(status)
+                        log = '%s' % "WARNING: {} ".format(
+                            key) + "has status {}".format(status)
                         # print (log)
                         logger.warning(log)
                     else:
@@ -476,22 +565,24 @@ class Data_Release():
                         # print (log)
                         logger.info(log)
                         if self.UPDATE:
-                            if passAudit:
-                                self.releasinator(name, key, status)
+                            self.releasinator(name, key, status)
                     named.append(name)
         print("Data written to file", self.outfile)
         if self.TIMING:
             timing = int(time.time() - t0)
-            print ("Execution of releasenator script took " + str(timing) + " seconds")
+            print("Execution of releasenator script took " +
+                  str(timing) + " seconds")
+
 
 def main():
     args = getArgs()
     key = encodedcc.ENC_Key(args.keyfile, args.key)
     connection = encodedcc.ENC_Connection(key)
-    print ("Running on", key.server)
+    print("Running on", key.server)
     # build the PROFILES reference dictionary
     release = Data_Release(args, connection)
     release.run_script()
+
 
 if __name__ == "__main__":
     main()

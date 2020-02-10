@@ -1,3 +1,7 @@
+import sys
+sys.path.append("/Users/parulkudtarkar/Desktop/Encode/pyencoded-tools")
+sys.path.append("/usr/local/lib/python3.6/site-packages")
+sys.path.append("/usr/local/lib/python3.6/site-packages/PIL")
 import argparse
 import os.path
 import encodedcc

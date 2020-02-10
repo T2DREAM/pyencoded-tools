@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: latin-1 -*-
-
+#from urllib.request import urlopen
+import sys
+sys.path.append("/usr/local/lib/python3.6/site-packages")
 import requests
 import json
 import sys

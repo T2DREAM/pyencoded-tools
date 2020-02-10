@@ -2,9 +2,11 @@
 # -*- coding: latin-1 -*-
 '''Take a CSV with file metadata, POST new file objects to the ENCODE DCC,
  upload files to the ENCODE cloud bucket'''
-
 import os
 import sys
+sys.path.append("/usr/local/lib/python3.6/site-packages")
+sys.path.append("/usr/local/lib/python3.6/site-packages/PIL")
+sys.path.append("/Users/parulkudtarkar/Library/Python/3.6/lib/python/site-packages")
 import logging
 from urllib.parse import urljoin
 import requests
